@@ -1,0 +1,143 @@
+---
+title: "XAI3: Model-agnostic methods. Partial Dependency Plot (PDP)."
+author: "Group 21: Yassmina Jebbour Maamri & Qilu Diana Wu"
+output: html_notebook
+---
+
+## 0.- Introduction.
+
+```{r}
+setwd(".")
+
+list.of.packages <- c("reshape2", "dplyr", "caret", "ggplot2", "tidyr", "ROCR", "plotly", "randomForest", "party", "pdp")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+lapply(list.of.packages, require, character.only=TRUE)
+```
+
+## 1.- One dimensional Partial Dependence Plot.
+
+```{r}
+day <- read.csv("day.csv")
+
+# Use one-hot encoding for season
+day$season <- as.factor(day$season)
+one_hot_encoded <- dummyVars(" ~ season", data = day)
+new_season <- predict(one_hot_encoded, newdata = day)
+day <- cbind(day, new_season)
+
+# Create feature MISTY
+MISTY <- as.data.frame(ifelse(day$weathersit == 2, 1, 0))
+colnames(MISTY) <- "MISTY"
+day <- cbind(day, MISTY)
+
+# Create feature RAIN
+RAIN <- as.data.frame(ifelse(day$weathersit == 3 | day$weathersit == 4, 1, 0))
+colnames(RAIN) <- "RAIN"
+day <- cbind(day, RAIN)
+
+# Denormalize temp
+# temp: Normalized temperature in Celsius. The values are derived via
+# (t-t_min)/(t_max-t_min), t_min=-8, t_max=+39 (only in hourly scale)
+t_min = -8
+t_max = +39
+new_temp <- day$temp * (t_max-t_min) + t_min
+day <- cbind(day, new_temp)
+
+# Denormalize hum
+# hum: Normalized humidity. The values are divided to 100 (max)
+new_hum <- day$hum * 100
+day <- cbind(day, new_hum)
+
+# Denormalize windspeed
+# windspeed: Normalized wind speed. The values are divided to 67 (max)
+new_windspeed <- day$windspeed * 67
+day <- cbind(day, new_windspeed)
+
+# Create feature days_since_2011
+days_since_2011 <- difftime(as.Date(day$dteday), as.Date("2011-01-01"), units = "days")
+days_since_2011 <- as.data.frame(as.numeric(days_since_2011))
+colnames(days_since_2011) <- "days_since_2011"
+day <- cbind(day, days_since_2011)
+
+# Select features that will be used in the linear model
+# Only select 3 features for season to avoid correlation (season.1 as reference)
+day <- subset(day, select = c(workingday, holiday, season.2, season.3, season.4, MISTY, 
+                                RAIN, new_temp, new_hum, new_windspeed, days_since_2011, cnt))
+
+# Rename features
+# season (1:winter, 2:spring, 3:summer, 4:fall)
+colnames(day)[3] <- "spring"
+colnames(day)[4] <- "summer"
+colnames(day)[5] <- "fall"
+colnames(day)[8] <- "temp"
+colnames(day)[9] <- "hum"
+colnames(day)[10] <- "windspeed"
+
+# Adjust the Random Forest model
+set.seed(250)
+rf_model <- randomForest(cnt ~ ., data = day, importance = TRUE)
+
+# Define the function to generate the PDP plot
+generate_pdp_plot <- function(model, pred_var, var_name, train_data, y_name = "Predicted bike rentals", grid_resolution = 20) {
+  # Generate Partial Dependency Plot (PDP) data for the specified predictor variable
+  pdp <- partial(model, pred.var = pred_var, train = train_data, grid.resolution = grid_resolution)
+  # Convert PDP data to a data frame
+  pdp_df <- as.data.frame(pdp)
+  # Create the PDP plot
+  pdp_plot <- ggplot(pdp_df) +
+    geom_line(aes_string(x = pred_var, y = "yhat"), color = "black") +
+    geom_rug(data = train_data, aes_string(x = pred_var), sides = "b") +
+    theme_minimal() +
+    labs(title = paste("Partial Dependence Plot:", var_name),
+         x = pred_var, y = y_name)
+  return(pdp_plot)
+}
+
+# Generate PDP plot for days since 2011
+pdp_plot_days <- generate_pdp_plot(rf_model, "days_since_2011", "Days Since 2011", day)
+print(pdp_plot_days)
+
+# Generate PDP plot for temperature
+pdp_plot_temp <- generate_pdp_plot(rf_model, "temp", "Temperature", day)
+print(pdp_plot_temp)
+
+# Generate PDP plot for humidity
+pdp_plot_hum <- generate_pdp_plot(rf_model, "hum", "Humidity", day)
+print(pdp_plot_hum)
+
+# Generate PDP plot for wind speed
+pdp_plot_wind <- generate_pdp_plot(rf_model, "windspeed", "Wind Speed", day)
+print(pdp_plot_wind)
+```
+
+## 2.- Bidimensional Partial Dependency Plot.
+
+```{r}
+# Extracting a set of random samples
+set.seed(128)
+sample <- day %>% sample_frac(0.1)
+
+X <- sample %>% select(hum, temp)
+y <- sample$cnt
+
+# Training the Random Forest model
+set.seed(128)
+model <- randomForest(X, y, ntree=100)
+
+# Generating the Partial Dependency Plot data
+pdp <- partial(model, pred.var = c("hum", "temp"), train = day, grid.resolution = 20)
+pdp_df <- as.data.frame(pdp)
+
+# Generating the 2D Partial Dependency Plot
+ggplot() +
+  geom_tile(data = pdp_df, aes(x = temp, y = hum, fill = yhat), width = 5, height = 10) +
+  geom_rug(data = day, aes(x = temp), sides = "b") +
+  geom_rug(data = day, aes(y = hum), sides = "l") + 
+  theme_minimal() +
+  labs(title = "Partial Dependency Plot of Bike Rentals", 
+       x = "Temperature",
+       y = "Humidity", 
+       fill = "Predicted Rentals Count")
+```
+
